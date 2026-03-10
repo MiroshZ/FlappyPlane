@@ -33,6 +33,7 @@ class Game:
         self.shop_cards: list[tuple[pygame.Rect, dict[str, object]]] = []
         self.city_layers = self.build_city_layers()
         self.city_offsets = [0.0 for _ in self.city_layers]
+        self.static_background = self.build_static_background()
 
         self.font_large = pygame.font.SysFont("Avenir Next", self.sc(42), bold=True)
         self.font_medium = pygame.font.SysFont("Avenir Next", self.sc(28))
@@ -282,6 +283,18 @@ class Game:
         pygame.display.flip()
 
     def draw_background(self) -> None:
+        self.screen.blit(self.static_background, (0, 0))
+        self.draw_city_background()
+
+    def draw_background_glow(self) -> None:
+        overlay = pygame.Surface((settings.SCREEN_WIDTH, settings.SCREEN_HEIGHT), pygame.SRCALPHA)
+        pygame.draw.circle(overlay, (*settings.SKY_GLOW, 90), (int(settings.SCREEN_WIDTH * 0.78), int(settings.SCREEN_HEIGHT * 0.18)), self.sc(140))
+        pygame.draw.circle(overlay, settings.MENU_GLOW, (int(settings.SCREEN_WIDTH * 0.2), int(settings.SCREEN_HEIGHT * 0.28)), self.sc(220))
+        pygame.draw.circle(overlay, (255, 255, 255, 35), (int(settings.SCREEN_WIDTH * 0.55), int(settings.SCREEN_HEIGHT * 0.62)), self.sc(180))
+        return overlay
+
+    def build_static_background(self) -> pygame.Surface:
+        background = pygame.Surface((settings.SCREEN_WIDTH, settings.SCREEN_HEIGHT))
         for y in range(settings.SCREEN_HEIGHT):
             progress = y / settings.SCREEN_HEIGHT
             color = (
@@ -289,28 +302,22 @@ class Game:
                 int(settings.SKY_TOP[1] * (1 - progress) + settings.SKY_BOTTOM[1] * progress),
                 int(settings.SKY_TOP[2] * (1 - progress) + settings.SKY_BOTTOM[2] * progress),
             )
-            pygame.draw.line(self.screen, color, (0, y), (settings.SCREEN_WIDTH, y))
+            pygame.draw.line(background, color, (0, y), (settings.SCREEN_WIDTH, y))
 
-        self.draw_background_glow()
-        self.draw_city_background()
+        background.blit(self.draw_background_glow(), (0, 0))
 
         ground_y = settings.SCREEN_HEIGHT - settings.GROUND_HEIGHT
-        pygame.draw.rect(self.screen, settings.GROUND, (0, ground_y, settings.SCREEN_WIDTH, settings.GROUND_HEIGHT))
-        pygame.draw.rect(self.screen, settings.GROUND_LINE, (0, ground_y, settings.SCREEN_WIDTH, max(8, self.sc(8))))
+        pygame.draw.rect(background, settings.GROUND, (0, ground_y, settings.SCREEN_WIDTH, settings.GROUND_HEIGHT))
+        pygame.draw.rect(background, settings.GROUND_LINE, (0, ground_y, settings.SCREEN_WIDTH, max(8, self.sc(8))))
 
         stripe_step = max(48, int(48 * self.scale))
         stripe_width = max(24, int(24 * self.scale))
         stripe_height = max(40, int(40 * self.scale))
         stripe_y = ground_y + max(22, int(22 * self.scale))
         for stripe_x in range(-20, settings.SCREEN_WIDTH + stripe_step, stripe_step):
-            pygame.draw.rect(self.screen, (61, 109, 73), (stripe_x, stripe_y, stripe_width, stripe_height), border_radius=max(8, self.sc(8)))
+            pygame.draw.rect(background, (61, 109, 73), (stripe_x, stripe_y, stripe_width, stripe_height), border_radius=max(8, self.sc(8)))
 
-    def draw_background_glow(self) -> None:
-        overlay = pygame.Surface((settings.SCREEN_WIDTH, settings.SCREEN_HEIGHT), pygame.SRCALPHA)
-        pygame.draw.circle(overlay, (*settings.SKY_GLOW, 90), (int(settings.SCREEN_WIDTH * 0.78), int(settings.SCREEN_HEIGHT * 0.18)), self.sc(140))
-        pygame.draw.circle(overlay, settings.MENU_GLOW, (int(settings.SCREEN_WIDTH * 0.2), int(settings.SCREEN_HEIGHT * 0.28)), self.sc(220))
-        pygame.draw.circle(overlay, (255, 255, 255, 35), (int(settings.SCREEN_WIDTH * 0.55), int(settings.SCREEN_HEIGHT * 0.62)), self.sc(180))
-        self.screen.blit(overlay, (0, 0))
+        return background.convert()
 
     def update_city(self, dt: float, playing: bool) -> None:
         speed_factor = 1.0 if playing else 0.45
@@ -340,6 +347,7 @@ class Game:
         ]
         for layer in layers:
             layer["width"] = max(building["x"] + building["width"] for building in layer["buildings"]) + self.sc(40)
+            layer["surface"] = self.build_city_layer_surface(layer)
         return layers
 
     def generate_buildings(self, target_width: int, gap: int, min_height: int, max_height: int) -> list[dict[str, int]]:
@@ -370,35 +378,35 @@ class Game:
             offset = int(self.city_offsets[index])
             start_x = -offset
             while start_x < settings.SCREEN_WIDTH + layer_width:
-                self.draw_city_layer(start_x, layer)
+                self.screen.blit(layer["surface"], (start_x, 0))
                 start_x += layer_width
 
-    def draw_city_layer(self, origin_x: int, layer: dict[str, object]) -> None:
+    def build_city_layer_surface(self, layer: dict[str, object]) -> pygame.Surface:
+        layer_width = int(layer["width"])
+        layer_surface = pygame.Surface((layer_width, settings.SCREEN_HEIGHT), pygame.SRCALPHA)
         color = layer["color"]
         base_y = int(layer["base_y"])
         for building in layer["buildings"]:
-            x = origin_x + int(building["x"])
+            x = int(building["x"])
             width = int(building["width"])
             height = int(building["height"])
             rect = pygame.Rect(x, base_y - height, width, height)
-            if rect.right < 0 or rect.x > settings.SCREEN_WIDTH:
-                continue
+            pygame.draw.rect(layer_surface, color, rect, border_radius=self.sc(3))
+            self.draw_building_roof(layer_surface, rect, int(building["roof"]), color)
+            self.draw_building_windows(layer_surface, rect)
+        return layer_surface
 
-            pygame.draw.rect(self.screen, color, rect, border_radius=self.sc(3))
-            self.draw_building_roof(rect, int(building["roof"]), color)
-            self.draw_building_windows(rect)
-
-    def draw_building_roof(self, rect: pygame.Rect, roof_type: int, color: tuple[int, int, int]) -> None:
+    def draw_building_roof(self, target: pygame.Surface, rect: pygame.Rect, roof_type: int, color: tuple[int, int, int]) -> None:
         if roof_type == 1:
-            pygame.draw.rect(self.screen, color, (rect.x + rect.width // 3, rect.y - self.sc(18), self.sc(10), self.sc(18)), border_radius=3)
+            pygame.draw.rect(target, color, (rect.x + rect.width // 3, rect.y - self.sc(18), self.sc(10), self.sc(18)), border_radius=3)
         elif roof_type == 2:
             pygame.draw.polygon(
-                self.screen,
+                target,
                 color,
                 [(rect.x + self.sc(8), rect.y), (rect.centerx, rect.y - self.sc(12)), (rect.right - self.sc(8), rect.y)],
             )
 
-    def draw_building_windows(self, rect: pygame.Rect) -> None:
+    def draw_building_windows(self, target: pygame.Surface, rect: pygame.Rect) -> None:
         window_w = max(3, self.sc(4))
         window_h = max(5, self.sc(6))
         gap_x = max(6, self.sc(8))
@@ -406,7 +414,7 @@ class Game:
         for x in range(rect.x + self.sc(8), rect.right - window_w - self.sc(4), gap_x):
             for y in range(rect.y + self.sc(10), rect.bottom - window_h - self.sc(8), gap_y):
                 if ((x + y) // gap_x) % 3 != 0:
-                    pygame.draw.rect(self.screen, settings.CITY_WINDOW, (x, y, window_w, window_h), border_radius=2)
+                    pygame.draw.rect(target, settings.CITY_WINDOW, (x, y, window_w, window_h), border_radius=2)
 
     def draw_hud(self) -> None:
         score_surface = self.font_large.render(str(self.score), True, settings.WHITE)
