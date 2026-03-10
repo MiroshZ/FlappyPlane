@@ -29,6 +29,7 @@ class Game:
         self.clock = pygame.time.Clock()
         self.mouse_pos = (0, 0)
         self.pause_buttons: dict[str, Button] = {}
+        self.game_over_buttons: dict[str, Button] = {}
         self.menu_buttons: dict[str, Button] = {}
         self.shop_cards: list[tuple[pygame.Rect, dict[str, object]]] = []
         self.city_layers = self.build_city_layers()
@@ -102,6 +103,7 @@ class Game:
         self.game_over = False
         self.paused = False
         self.pause_buttons = {}
+        self.game_over_buttons = {}
 
     def run(self) -> None:
         while True:
@@ -153,7 +155,13 @@ class Game:
             return False
 
         if key == pygame.K_ESCAPE:
-            self.paused = True
+            if self.game_over:
+                self.return_to_menu()
+            else:
+                self.paused = True
+            return False
+        if key == pygame.K_m and self.game_over:
+            self.return_to_menu()
             return False
         if key == pygame.K_r and self.game_over:
             self.start_run()
@@ -203,6 +211,15 @@ class Game:
                 self.paused = True
                 return False
             if self.game_over:
+                if not self.game_over_buttons:
+                    self.build_game_over_buttons()
+                for action, button in self.game_over_buttons.items():
+                    if button.contains(position):
+                        if action == "restart":
+                            self.start_run(initial_flap=True)
+                        elif action == "menu":
+                            self.return_to_menu()
+                        return False
                 self.start_run(initial_flap=True)
                 return False
             return True
@@ -438,19 +455,23 @@ class Game:
         self.draw_button(self.play_button)
 
     def draw_game_over(self) -> None:
-        panel = pygame.Rect(0, 0, self.sc(400), self.sc(210))
+        panel = pygame.Rect(0, 0, self.sc(420), self.sc(250))
         panel.center = (settings.SCREEN_WIDTH // 2, settings.SCREEN_HEIGHT // 2)
         self.draw_panel(panel, radius=self.sc(22))
 
         title = self.font_large.render("Crash!", True, settings.TEXT)
         subtitle = self.font_medium.render(f"Score: {self.score}   Best: {self.best_score}", True, settings.TEXT)
         reward = self.font_small.render(f"Coins earned this run: {self.run_coins}", True, settings.TEXT)
-        retry = self.font_small.render("Press R, SPACE or click to restart", True, settings.TEXT)
+        retry = self.font_small.render("Press R/Space to restart or M/Esc for menu", True, settings.TEXT)
 
         self.screen.blit(title, title.get_rect(center=(panel.centerx, panel.y + self.sc(50))))
         self.screen.blit(subtitle, subtitle.get_rect(center=(panel.centerx, panel.y + self.sc(96))))
         self.screen.blit(reward, reward.get_rect(center=(panel.centerx, panel.y + self.sc(132))))
-        self.screen.blit(retry, retry.get_rect(center=(panel.centerx, panel.y + self.sc(168))))
+        self.screen.blit(retry, retry.get_rect(center=(panel.centerx, panel.y + self.sc(166))))
+
+        self.build_game_over_buttons(panel)
+        for button in self.game_over_buttons.values():
+            self.draw_button(button)
 
     def draw_menu(self) -> None:
         content_width = min(self.sc(1080), settings.SCREEN_WIDTH - self.sc(140))
@@ -630,7 +651,9 @@ class Game:
         self.obstacles.clear()
         self.coins.clear()
         self.paused = False
+        self.game_over = False
         self.pause_buttons = {}
+        self.game_over_buttons = {}
 
     def persist_progress(self) -> None:
         if self.run_coins:
@@ -706,6 +729,20 @@ class Game:
         top = panel.y + self.sc(132)
         self.pause_buttons = {
             "resume": Button(pygame.Rect(left, top, button_width, button_height), "Resume", "primary"),
+            "menu": Button(pygame.Rect(left + button_width + gap, top, button_width, button_height), "Main Menu", "secondary"),
+        }
+
+    def build_game_over_buttons(self, panel: pygame.Rect | None = None) -> None:
+        if panel is None:
+            panel = pygame.Rect(0, 0, self.sc(420), self.sc(250))
+            panel.center = (settings.SCREEN_WIDTH // 2, settings.SCREEN_HEIGHT // 2)
+        button_width = self.sc(152)
+        button_height = self.sc(48)
+        gap = self.sc(18)
+        left = panel.centerx - button_width - gap // 2
+        top = panel.y + self.sc(188)
+        self.game_over_buttons = {
+            "restart": Button(pygame.Rect(left, top, button_width, button_height), "Restart", "primary"),
             "menu": Button(pygame.Rect(left + button_width + gap, top, button_width, button_height), "Main Menu", "secondary"),
         }
 
