@@ -417,19 +417,24 @@ class Game:
                     pygame.draw.rect(target, settings.CITY_WINDOW, (x, y, window_w, window_h), border_radius=2)
 
     def draw_hud(self) -> None:
-        score_surface = self.font_large.render(str(self.score), True, settings.WHITE)
-        score_shadow = self.font_large.render(str(self.score), True, (53, 87, 110))
-        self.screen.blit(score_shadow, (self.sc(30), self.sc(24)))
-        self.screen.blit(score_surface, (self.sc(24), self.sc(18)))
+        score_panel = pygame.Rect(self.sc(22), self.sc(18), self.sc(176), self.sc(88))
+        panel_surface = pygame.Surface(score_panel.size, pygame.SRCALPHA)
+        pygame.draw.rect(panel_surface, settings.HUD_PANEL, panel_surface.get_rect(), border_radius=self.sc(18))
+        self.screen.blit(panel_surface, score_panel.topleft)
+        pygame.draw.rect(self.screen, settings.HUD_STROKE, score_panel, width=2, border_radius=self.sc(18))
 
-        hint = self.font_small.render("SPACE / CLICK to fly", True, settings.TEXT)
+        score_label = self.font_tiny.render("Score", True, settings.HUD_ACCENT)
+        score_value = self.font_large.render(str(self.score), True, settings.WHITE)
+        self.screen.blit(score_label, (score_panel.x + self.sc(16), score_panel.y + self.sc(10)))
+        self.screen.blit(score_value, (score_panel.x + self.sc(16), score_panel.y + self.sc(26)))
+
+        coins_text = self.font_small.render(f"Coins {self.total_coins + self.run_coins}", True, settings.WHITE)
+        self.screen.blit(coins_text, (score_panel.x + self.sc(92), score_panel.y + self.sc(48)))
+
+        hint = self.font_small.render("SPACE / CLICK to fly", True, settings.WHITE)
         self.screen.blit(hint, (self.sc(24), settings.SCREEN_HEIGHT - settings.GROUND_HEIGHT + self.sc(28)))
 
-        coins = self.font_small.render(f"Coins: {self.total_coins + self.run_coins}", True, settings.TEXT)
-        coins_rect = coins.get_rect(topright=(settings.SCREEN_WIDTH - self.sc(30), self.sc(30)))
-        self.screen.blit(coins, coins_rect)
-
-        self.play_button = Button(self.top_right_button_rect(), "Pause", "secondary")
+        self.play_button = Button(self.top_right_button_rect(), "Pause", "hud")
         self.draw_button(self.play_button)
 
     def draw_game_over(self) -> None:
@@ -669,6 +674,10 @@ class Game:
             fill = settings.BUTTON_HOVER if hovered else settings.BUTTON_SOFT
             stroke = settings.PANEL_STROKE
             text_color = settings.TEXT
+        elif button.variant == "hud":
+            fill = settings.HUD_PAUSE_HOVER if hovered else settings.HUD_PAUSE
+            stroke = settings.HUD_STROKE
+            text_color = settings.WHITE
         else:
             fill = (255, 246, 228) if hovered else settings.BUTTON_SOFT
             stroke = settings.BUTTON_HOVER if hovered else settings.PANEL_STROKE
@@ -676,7 +685,10 @@ class Game:
 
         base_rect = draw_rect.inflate(self.sc(10), self.sc(10))
         glow = pygame.Surface(base_rect.size, pygame.SRCALPHA)
-        glow.fill(settings.BUTTON_GLOW if hovered else (255, 255, 255, 36))
+        if button.variant == "hud":
+            glow.fill((110, 160, 205, 70) if hovered else (70, 110, 150, 42))
+        else:
+            glow.fill(settings.BUTTON_GLOW if hovered else (255, 255, 255, 36))
         self.screen.blit(glow, base_rect.topleft)
         pygame.draw.rect(self.screen, fill, draw_rect, border_radius=self.sc(16))
         pygame.draw.rect(self.screen, stroke, draw_rect, width=2, border_radius=self.sc(16))
