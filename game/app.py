@@ -93,8 +93,20 @@ class Game:
     def top_right_button_rect(self) -> pygame.Rect:
         return self.r(settings.SCREEN_WIDTH - self.sc(170), self.sc(24), self.sc(140), self.sc(46))
 
+    def get_second_player_skin(self) -> dict[str, object]:
+        for skin in settings.SKINS:
+            if skin["id"] != self.selected_skin_id:
+                return skin
+        return self.skin_by_id[self.selected_skin_id]
+
     def reset(self) -> None:
-        self.player = make_player(self.skin_by_id[self.selected_skin_id])
+        self.players = [
+            make_player(self.skin_by_id[self.selected_skin_id]),
+            make_player(self.get_second_player_skin()),
+        ]
+        self.players[0].rect.y -= self.sc(56)
+        self.players[1].rect.y += self.sc(18)
+        self.player_alive = [True, True]
         self.obstacles: list[ObstaclePair] = []
         self.clouds: list[Cloud] = [make_cloud(x * int(240 * self.scale)) for x in range(6)]
         self.coins: list[Coin] = []
@@ -108,7 +120,7 @@ class Game:
     def run(self) -> None:
         while True:
             dt = self.clock.tick(settings.FPS) / 1000.0
-            flap = False
+            flaps = [False, False]
             self.mouse_pos = pygame.mouse.get_pos()
 
             for event in pygame.event.get():
@@ -116,22 +128,26 @@ class Game:
                     pygame.quit()
                     sys.exit(0)
                 if event.type == pygame.KEYDOWN:
-                    flap = self.handle_keydown(event.key) or flap
+                    key_flaps = self.handle_keydown(event.key)
+                    flaps[0] = flaps[0] or key_flaps[0]
+                    flaps[1] = flaps[1] or key_flaps[1]
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    flap = self.handle_click(event.pos) or flap
+                    click_flaps = self.handle_click(event.pos)
+                    flaps[0] = flaps[0] or click_flaps[0]
+                    flaps[1] = flaps[1] or click_flaps[1]
                 if event.type == self.obstacle_event and self.state == "playing" and not self.game_over and not self.paused:
                     self.obstacles.append(make_obstacle())
                 if event.type == self.coin_event and self.state == "playing" and not self.game_over and not self.paused:
                     self.coins.append(make_coin())
 
             if self.state == "playing" and not self.game_over and not self.paused:
-                self.update(dt, flap)
+                self.update(dt, tuple(flaps))
             else:
                 self.update_menu_scene(dt)
 
             self.draw()
 
-    def handle_keydown(self, key: int) -> bool:
+    def handle_keydown(self, key: int) -> tuple[bool, bool]:
         if self.state == "menu":
             if key == pygame.K_RETURN:
                 self.start_run()
@@ -139,41 +155,45 @@ class Game:
                 self.start_run(initial_flap=True)
             elif key == pygame.K_s:
                 self.state = "shop"
-            return False
+            return (False, False)
 
         if self.state == "shop":
             if key in (pygame.K_ESCAPE, pygame.K_m):
                 self.state = "menu"
-            return False
+            return (False, False)
 
         if self.state != "playing":
-            return False
+            return (False, False)
 
         if self.paused:
             if key == pygame.K_ESCAPE:
                 self.paused = False
-            return False
+            return (False, False)
 
         if key == pygame.K_ESCAPE:
             if self.game_over:
                 self.return_to_menu()
             else:
                 self.paused = True
-            return False
+            return (False, False)
         if key == pygame.K_m and self.game_over:
             self.return_to_menu()
-            return False
+            return (False, False)
         if key == pygame.K_r and self.game_over:
             self.start_run()
-            return False
+            return (False, False)
         if key in (pygame.K_SPACE, pygame.K_w, pygame.K_UP):
             if self.game_over:
                 self.start_run(initial_flap=True)
-                return False
-            return True
-        return False
+                return (False, False)
+            if key == pygame.K_w:
+                return (True, False)
+            if key == pygame.K_UP:
+                return (False, True)
+            return (True, True)
+        return (False, False)
 
-    def handle_click(self, position: tuple[int, int]) -> bool:
+    def handle_click(self, position: tuple[int, int]) -> tuple[bool, bool]:
         if self.state == "menu":
             for action, button in self.menu_buttons.items():
                 if button.contains(position):
@@ -184,16 +204,16 @@ class Game:
                     elif action == "quit":
                         pygame.quit()
                         sys.exit(0)
-            return False
+            return (False, False)
 
         if self.state == "shop":
             for rect, skin in self.shop_cards:
                 if rect.collidepoint(position):
                     self.buy_or_select_skin(str(skin["id"]))
-                    return False
+                    return (False, False)
             if self.get_back_button().contains(position):
                 self.state = "menu"
-            return False
+            return (False, False)
 
         if self.state == "playing":
             if self.paused:
@@ -205,11 +225,11 @@ class Game:
                             self.paused = False
                         elif action == "menu":
                             self.return_to_menu()
-                        return False
-                return False
+                        return (False, False)
+                return (False, False)
             if self.play_button.contains(position):
                 self.paused = True
-                return False
+                return (False, False)
             if self.game_over:
                 if not self.game_over_buttons:
                     self.build_game_over_buttons()
@@ -219,12 +239,12 @@ class Game:
                             self.start_run(initial_flap=True)
                         elif action == "menu":
                             self.return_to_menu()
-                        return False
+                        return (False, False)
                 self.start_run(initial_flap=True)
-                return False
-            return True
+                return (False, False)
+            return (True, True)
 
-        return False
+        return (False, False)
 
     def update_menu_scene(self, dt: float) -> None:
         self.update_city(dt, playing=False)
@@ -233,13 +253,16 @@ class Game:
             if cloud.x < -90 * self.scale:
                 cloud.x = settings.SCREEN_WIDTH + 40 * self.scale
 
-    def update(self, dt: float, flap: bool) -> None:
-        self.player.update(dt, flap)
+    def update(self, dt: float, flaps: tuple[bool, bool]) -> None:
+        for index, player in enumerate(self.players):
+            if self.player_alive[index]:
+                player.update(dt, flaps[index])
         self.update_city(dt, playing=True)
 
         for obstacle in self.obstacles:
             obstacle.update(dt)
-            if not obstacle.passed and obstacle.x + settings.OBSTACLE_WIDTH < self.player.rect.x:
+            lead_x = min(player.rect.x for index, player in enumerate(self.players) if self.player_alive[index])
+            if not obstacle.passed and obstacle.x + settings.OBSTACLE_WIDTH < lead_x:
                 obstacle.passed = True
                 self.score += 1
                 self.best_score = max(self.best_score, self.score)
@@ -257,23 +280,28 @@ class Game:
         self.check_collisions()
 
     def check_collisions(self) -> None:
-        if self.player.rect.bottom >= settings.SCREEN_HEIGHT - settings.GROUND_HEIGHT:
-            self.game_over = True
-
-        for obstacle in self.obstacles:
-            if obstacle.collides(self.player.rect):
-                self.game_over = True
-                return
+        floor_y = settings.SCREEN_HEIGHT - settings.GROUND_HEIGHT
+        for index, player in enumerate(self.players):
+            if not self.player_alive[index]:
+                continue
+            if player.rect.bottom >= floor_y:
+                self.player_alive[index] = False
+                continue
+            for obstacle in self.obstacles:
+                if obstacle.collides(player.rect):
+                    self.player_alive[index] = False
+                    break
 
         remaining_coins: list[Coin] = []
         for coin in self.coins:
-            if coin.rect.colliderect(self.player.rect):
+            if any(self.player_alive[index] and coin.rect.colliderect(player.rect) for index, player in enumerate(self.players)):
                 self.score += 3
                 self.run_coins += 1
                 self.best_score = max(self.best_score, self.score)
             else:
                 remaining_coins.append(coin)
         self.coins = remaining_coins
+        self.game_over = not any(self.player_alive)
 
     def draw(self) -> None:
         self.draw_background()
@@ -290,7 +318,9 @@ class Game:
                 coin.draw(self.screen)
             for obstacle in self.obstacles:
                 obstacle.draw(self.screen)
-            self.player.draw(self.screen)
+            for index, player in enumerate(self.players):
+                if self.player_alive[index]:
+                    player.draw(self.screen)
             self.draw_hud()
             if self.paused:
                 self.draw_pause_overlay()
@@ -434,7 +464,7 @@ class Game:
                     pygame.draw.rect(target, settings.CITY_WINDOW, (x, y, window_w, window_h), border_radius=2)
 
     def draw_hud(self) -> None:
-        score_panel = pygame.Rect(self.sc(22), self.sc(18), self.sc(176), self.sc(88))
+        score_panel = pygame.Rect(self.sc(22), self.sc(18), self.sc(310), self.sc(88))
         panel_surface = pygame.Surface(score_panel.size, pygame.SRCALPHA)
         pygame.draw.rect(panel_surface, settings.HUD_PANEL, panel_surface.get_rect(), border_radius=self.sc(18))
         self.screen.blit(panel_surface, score_panel.topleft)
@@ -446,9 +476,13 @@ class Game:
         self.screen.blit(score_value, (score_panel.x + self.sc(16), score_panel.y + self.sc(26)))
 
         coins_text = self.font_small.render(f"Coins {self.total_coins + self.run_coins}", True, settings.WHITE)
-        self.screen.blit(coins_text, (score_panel.x + self.sc(92), score_panel.y + self.sc(48)))
+        p1_text = self.font_tiny.render(f"P1 W {'OK' if self.player_alive[0] else 'DOWN'}", True, settings.WHITE)
+        p2_text = self.font_tiny.render(f"P2 Up {'OK' if self.player_alive[1] else 'DOWN'}", True, settings.WHITE)
+        self.screen.blit(coins_text, (score_panel.x + self.sc(96), score_panel.y + self.sc(22)))
+        self.screen.blit(p1_text, (score_panel.x + self.sc(96), score_panel.y + self.sc(48)))
+        self.screen.blit(p2_text, (score_panel.x + self.sc(192), score_panel.y + self.sc(48)))
 
-        hint = self.font_small.render("SPACE / CLICK to fly", True, settings.WHITE)
+        hint = self.font_small.render("P1: W   P2: Arrow Up", True, settings.WHITE)
         self.screen.blit(hint, (self.sc(24), settings.SCREEN_HEIGHT - settings.GROUND_HEIGHT + self.sc(28)))
 
         self.play_button = Button(self.top_right_button_rect(), "Pause", "hud")
@@ -541,7 +575,7 @@ class Game:
         stats = [
             f"Coins: {self.total_coins}",
             f"Best score: {self.best_score}",
-            f"Equipped: {self.skin_by_id[self.selected_skin_id]['name']}",
+            "2 players: W and Arrow Up",
             "Enter to start, S to open shop",
         ]
         for index, line in enumerate(stats):
@@ -641,7 +675,8 @@ class Game:
             self.persist_progress()
         self.reset()
         if initial_flap:
-            self.player.velocity_y = -settings.PLAYER_FLAP_FORCE
+            for player in self.players:
+                player.velocity_y = -settings.PLAYER_FLAP_FORCE
         self.state = "playing"
 
     def return_to_menu(self) -> None:
