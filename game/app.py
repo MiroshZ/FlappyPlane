@@ -53,7 +53,9 @@ class Game:
         self.total_coins = int(self.save_data["coins"])
         self.best_score = int(self.save_data["best_score"])
         self.unlocked_skins = set(self.save_data["unlocked_skins"])
-        self.selected_skin_id = str(self.save_data["selected_skin"])
+        self.selected_skin_ids = [str(skin_id) for skin_id in self.save_data["selected_skins"]]
+        self.selected_skin_id = self.selected_skin_ids[0]
+        self.active_shop_player = 0
         self.state = "menu"
         self.play_button = Button(self.top_right_button_rect(), "Pause", "secondary")
 
@@ -96,19 +98,17 @@ class Game:
         return self.r(settings.SCREEN_WIDTH - self.sc(170), self.sc(24), self.sc(140), self.sc(46))
 
     def get_second_player_skin(self) -> dict[str, object]:
-        for skin in settings.SKINS:
-            if skin["id"] != self.selected_skin_id:
-                return skin
-        return self.skin_by_id[self.selected_skin_id]
+        return self.skin_by_id[self.selected_skin_ids[1]]
 
     def reset(self) -> None:
         self.players = [
-            make_player(self.skin_by_id[self.selected_skin_id]),
+            make_player(self.skin_by_id[self.selected_skin_ids[0]]),
             make_player(self.get_second_player_skin()),
         ]
         self.players[0].rect.y -= self.sc(56)
         self.players[1].rect.y += self.sc(18)
         self.player_alive = [True, True]
+        self.player_scores = [0, 0]
         self.obstacles: list[ObstaclePair] = []
         self.clouds: list[Cloud] = [make_cloud(x * int(240 * self.scale)) for x in range(6)]
         self.coins: list[Coin] = []
@@ -213,6 +213,10 @@ class Game:
             return (False, False)
 
         if self.state == "shop":
+            for index, button in enumerate(self.get_shop_player_buttons()):
+                if button.contains(position):
+                    self.active_shop_player = index
+                    return (False, False)
             for rect, skin in self.shop_cards:
                 if rect.collidepoint(position):
                     self.buy_or_select_skin(str(skin["id"]))
@@ -267,11 +271,14 @@ class Game:
 
         for obstacle in self.obstacles:
             obstacle.update(dt)
-            lead_x = min(player.rect.x for index, player in enumerate(self.players) if self.player_alive[index])
-            if not obstacle.passed and obstacle.x + settings.OBSTACLE_WIDTH < lead_x:
-                obstacle.passed = True
-                self.score += 1
-                self.best_score = max(self.best_score, self.score)
+            for index, player in enumerate(self.players):
+                if not self.player_alive[index]:
+                    continue
+                if index not in obstacle.passed_players and obstacle.x + settings.OBSTACLE_WIDTH < player.rect.x:
+                    obstacle.passed_players.add(index)
+                    self.player_scores[index] += 1
+            self.score = sum(self.player_scores)
+            self.best_score = max(self.best_score, self.score)
 
         for cloud in self.clouds:
             cloud.update(dt)
@@ -300,11 +307,16 @@ class Game:
 
         remaining_coins: list[Coin] = []
         for coin in self.coins:
-            if any(self.player_alive[index] and coin.rect.colliderect(player.rect) for index, player in enumerate(self.players)):
-                self.score += 3
-                self.run_coins += 1
-                self.best_score = max(self.best_score, self.score)
-            else:
+            collected = False
+            for index, player in enumerate(self.players):
+                if self.player_alive[index] and coin.rect.colliderect(player.rect):
+                    self.player_scores[index] += 3
+                    self.score = sum(self.player_scores)
+                    self.run_coins += 1
+                    self.best_score = max(self.best_score, self.score)
+                    collected = True
+                    break
+            if not collected:
                 remaining_coins.append(coin)
         self.coins = remaining_coins
         self.game_over = not any(self.player_alive)
@@ -470,23 +482,28 @@ class Game:
                     pygame.draw.rect(target, settings.CITY_WINDOW, (x, y, window_w, window_h), border_radius=2)
 
     def draw_hud(self) -> None:
-        score_panel = pygame.Rect(self.sc(22), self.sc(18), self.sc(310), self.sc(88))
+        total_score = sum(self.player_scores)
+        score_panel = pygame.Rect(self.sc(22), self.sc(18), self.sc(388), self.sc(94))
         panel_surface = pygame.Surface(score_panel.size, pygame.SRCALPHA)
         pygame.draw.rect(panel_surface, settings.HUD_PANEL, panel_surface.get_rect(), border_radius=self.sc(18))
         self.screen.blit(panel_surface, score_panel.topleft)
         pygame.draw.rect(self.screen, settings.HUD_STROKE, score_panel, width=2, border_radius=self.sc(18))
 
-        score_label = self.font_tiny.render("Score", True, settings.HUD_ACCENT)
-        score_value = self.font_large.render(str(self.score), True, settings.WHITE)
-        self.screen.blit(score_label, (score_panel.x + self.sc(16), score_panel.y + self.sc(10)))
-        self.screen.blit(score_value, (score_panel.x + self.sc(16), score_panel.y + self.sc(26)))
-
+        total_label = self.font_tiny.render("Total", True, settings.HUD_ACCENT)
+        total_value = self.font_large.render(str(total_score), True, settings.WHITE)
+        p1_text = self.font_small.render(f"P1  {self.player_scores[0]}", True, settings.WHITE)
+        p2_text = self.font_small.render(f"P2  {self.player_scores[1]}", True, settings.WHITE)
+        p1_state = self.font_tiny.render(f"W  {'OK' if self.player_alive[0] else 'DOWN'}", True, settings.WHITE)
+        p2_state = self.font_tiny.render(f"UP {'OK' if self.player_alive[1] else 'DOWN'}", True, settings.WHITE)
         coins_text = self.font_small.render(f"Coins {self.total_coins + self.run_coins}", True, settings.WHITE)
-        p1_text = self.font_tiny.render(f"P1 W {'OK' if self.player_alive[0] else 'DOWN'}", True, settings.WHITE)
-        p2_text = self.font_tiny.render(f"P2 Up {'OK' if self.player_alive[1] else 'DOWN'}", True, settings.WHITE)
-        self.screen.blit(coins_text, (score_panel.x + self.sc(96), score_panel.y + self.sc(22)))
-        self.screen.blit(p1_text, (score_panel.x + self.sc(96), score_panel.y + self.sc(48)))
-        self.screen.blit(p2_text, (score_panel.x + self.sc(192), score_panel.y + self.sc(48)))
+
+        self.screen.blit(total_label, (score_panel.x + self.sc(16), score_panel.y + self.sc(10)))
+        self.screen.blit(total_value, (score_panel.x + self.sc(16), score_panel.y + self.sc(24)))
+        self.screen.blit(p1_text, (score_panel.x + self.sc(118), score_panel.y + self.sc(18)))
+        self.screen.blit(p1_state, (score_panel.x + self.sc(120), score_panel.y + self.sc(48)))
+        self.screen.blit(p2_text, (score_panel.x + self.sc(222), score_panel.y + self.sc(18)))
+        self.screen.blit(p2_state, (score_panel.x + self.sc(224), score_panel.y + self.sc(48)))
+        self.screen.blit(coins_text, (score_panel.x + self.sc(118), score_panel.y + self.sc(68)))
 
         hint = self.font_small.render("P1: W   P2: Arrow Up", True, settings.WHITE)
         self.screen.blit(hint, (self.sc(24), settings.SCREEN_HEIGHT - settings.GROUND_HEIGHT + self.sc(28)))
@@ -569,19 +586,28 @@ class Game:
 
         preview_rect = pygame.Rect(0, 0, self.sc(220), self.sc(110))
         preview_rect.center = preview_panel.center
-        preview_plane = make_player(self.skin_by_id[self.selected_skin_id])
-        preview_plane.rect.center = preview_rect.center
-        preview_plane.bob_phase = pygame.time.get_ticks() / 180
-        preview_plane.draw(self.screen)
-        caption = self.font_small.render("Current plane skin", True, settings.TEXT)
-        name = self.font_medium.render(self.skin_by_id[self.selected_skin_id]["name"], True, settings.TEXT)
+        preview_plane_1 = make_player(self.skin_by_id[self.selected_skin_ids[0]])
+        preview_plane_2 = make_player(self.skin_by_id[self.selected_skin_ids[1]])
+        preview_plane_1.rect.center = (preview_rect.centerx, preview_rect.centery - self.sc(22))
+        preview_plane_2.rect.center = (preview_rect.centerx, preview_rect.centery + self.sc(24))
+        preview_plane_1.bob_phase = pygame.time.get_ticks() / 180
+        preview_plane_2.bob_phase = pygame.time.get_ticks() / 180 + 0.8
+        preview_plane_1.draw(self.screen)
+        preview_plane_2.draw(self.screen)
+        caption = self.font_small.render("Current skins", True, settings.TEXT)
+        name = self.font_small.render(
+            f"P1 {self.skin_by_id[self.selected_skin_ids[0]]['name']}  |  P2 {self.skin_by_id[self.selected_skin_ids[1]]['name']}",
+            True,
+            settings.TEXT,
+        )
         self.screen.blit(caption, caption.get_rect(center=(preview_panel.centerx, preview_panel.y + self.sc(44))))
         self.screen.blit(name, name.get_rect(center=(preview_panel.centerx, preview_panel.bottom - self.sc(36))))
 
         stats = [
             f"Coins: {self.total_coins}",
             f"Best score: {self.best_score}",
-            "2 players: W and Arrow Up",
+            f"P1 skin: {self.skin_by_id[self.selected_skin_ids[0]]['name']}",
+            f"P2 skin: {self.skin_by_id[self.selected_skin_ids[1]]['name']}",
             "Enter to start, S to open shop",
         ]
         for index, line in enumerate(stats):
@@ -593,7 +619,10 @@ class Game:
         self.draw_panel(header_panel, radius=self.sc(24), alpha=215)
         self.screen.blit(self.font_large.render("Skin Shop", True, settings.TEXT), (header_panel.x + self.sc(18), header_panel.y + self.sc(18)))
         self.screen.blit(self.font_small.render(f"Balance: {self.total_coins} coins", True, settings.TEXT), (header_panel.x + self.sc(20), header_panel.y + self.sc(64)))
-        self.screen.blit(self.font_small.render("Click a card to buy or equip.", True, settings.TEXT), (header_panel.x + self.sc(260), header_panel.y + self.sc(64)))
+        self.screen.blit(self.font_small.render("Choose active player, then click a skin to buy or equip.", True, settings.TEXT), (header_panel.x + self.sc(220), header_panel.y + self.sc(64)))
+
+        for button in self.get_shop_player_buttons():
+            self.draw_button(button)
 
         self.shop_cards = []
         card_width = self.sc(162)
@@ -601,7 +630,7 @@ class Game:
         gap = self.sc(18)
         total_width = len(settings.SKINS) * card_width + (len(settings.SKINS) - 1) * gap
         start_x = max(self.sc(40), (settings.SCREEN_WIDTH - total_width) // 2)
-        start_y = self.sc(170)
+        start_y = self.sc(190)
 
         for index, skin in enumerate(settings.SKINS):
             x = start_x + index * (card_width + gap)
@@ -634,7 +663,7 @@ class Game:
         status_surface = self.font_tiny.render(status, True, color)
         self.screen.blit(status_surface, status_surface.get_rect(center=(draw_rect.centerx, draw_rect.y + self.sc(186))))
 
-        border_color = settings.ACCENT if self.selected_skin_id == skin["id"] else (settings.BUTTON_HOVER if hovered else settings.PANEL_STROKE)
+        border_color = settings.ACCENT if self.selected_skin_ids[self.active_shop_player] == skin["id"] else (settings.BUTTON_HOVER if hovered else settings.PANEL_STROKE)
         pygame.draw.rect(self.screen, border_color, draw_rect, width=3, border_radius=self.sc(20))
 
     def draw_pause_overlay(self) -> None:
@@ -656,10 +685,12 @@ class Game:
             self.draw_button(button)
 
     def get_skin_status(self, skin_id: str, cost: int) -> tuple[str, tuple[int, int, int]]:
-        if skin_id == self.selected_skin_id:
-            return "Equipped", settings.SUCCESS
+        equipped_players = [f"P{index + 1}" for index, selected_skin_id in enumerate(self.selected_skin_ids) if skin_id == selected_skin_id]
+        if equipped_players:
+            equipped_text = " & ".join(equipped_players)
+            return f"Equipped {equipped_text}", settings.SUCCESS
         if skin_id in self.unlocked_skins:
-            return "Owned - click to equip", settings.TEXT
+            return f"Owned - equip for P{self.active_shop_player + 1}", settings.TEXT
         if self.total_coins >= cost:
             return "Affordable - click to buy", settings.ACCENT_DARK
         return "Locked", settings.LOCKED
@@ -673,7 +704,8 @@ class Game:
             self.total_coins -= cost
             self.unlocked_skins.add(skin_id)
 
-        self.selected_skin_id = skin_id
+        self.selected_skin_ids[self.active_shop_player] = skin_id
+        self.selected_skin_id = self.selected_skin_ids[0]
         self.persist_progress()
 
     def start_run(self, initial_flap: bool = False) -> None:
@@ -705,13 +737,21 @@ class Game:
             {
                 "coins": self.total_coins,
                 "best_score": self.best_score,
-                "selected_skin": self.selected_skin_id,
+                "selected_skin": self.selected_skin_ids[0],
+                "selected_skins": self.selected_skin_ids,
                 "unlocked_skins": sorted(self.unlocked_skins),
             }
         )
 
     def get_back_button(self) -> Button:
         return Button(pygame.Rect(settings.SCREEN_WIDTH - self.sc(174), self.sc(34), self.sc(140), self.sc(42)), "Back", "secondary")
+
+    def get_shop_player_buttons(self) -> list[Button]:
+        selector_y = self.sc(126)
+        return [
+            Button(pygame.Rect(self.sc(64), selector_y, self.sc(120), self.sc(42)), "Player 1", "primary" if self.active_shop_player == 0 else "secondary"),
+            Button(pygame.Rect(self.sc(198), selector_y, self.sc(120), self.sc(42)), "Player 2", "primary" if self.active_shop_player == 1 else "secondary"),
+        ]
 
     def draw_panel(
         self,

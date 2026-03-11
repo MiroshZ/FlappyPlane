@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import random
 
 import pygame
@@ -124,6 +124,7 @@ class ObstaclePair:
     x: float
     gap_y: int
     passed: bool = False
+    passed_players: set[int] = field(default_factory=set)
 
     @property
     def top_rect(self) -> pygame.Rect:
