@@ -21,6 +21,8 @@ class Button:
 
 
 class Game:
+    W_SCANCODE = 26
+
     def __init__(self) -> None:
         pygame.init()
         pygame.display.set_caption(settings.TITLE)
@@ -128,7 +130,7 @@ class Game:
                     pygame.quit()
                     sys.exit(0)
                 if event.type == pygame.KEYDOWN:
-                    key_flaps = self.handle_keydown(event.key)
+                    key_flaps = self.handle_keydown(event)
                     flaps[0] = flaps[0] or key_flaps[0]
                     flaps[1] = flaps[1] or key_flaps[1]
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -147,7 +149,10 @@ class Game:
 
             self.draw()
 
-    def handle_keydown(self, key: int) -> tuple[bool, bool]:
+    def handle_keydown(self, event: pygame.event.Event) -> tuple[bool, bool]:
+        key = event.key
+        scancode = getattr(event, "scancode", None)
+
         if self.state == "menu":
             if key == pygame.K_RETURN:
                 self.start_run()
@@ -182,15 +187,16 @@ class Game:
         if key == pygame.K_r and self.game_over:
             self.start_run()
             return (False, False)
-        if key in (pygame.K_SPACE, pygame.K_w, pygame.K_UP):
+        if scancode == self.W_SCANCODE or key == pygame.K_w:
             if self.game_over:
                 self.start_run(initial_flap=True)
                 return (False, False)
-            if key == pygame.K_w:
-                return (True, False)
-            if key == pygame.K_UP:
-                return (False, True)
-            return (True, True)
+            return (True, False)
+        if key == pygame.K_UP:
+            if self.game_over:
+                self.start_run(initial_flap=True)
+                return (False, False)
+            return (False, True)
         return (False, False)
 
     def handle_click(self, position: tuple[int, int]) -> tuple[bool, bool]:
@@ -242,7 +248,7 @@ class Game:
                         return (False, False)
                 self.start_run(initial_flap=True)
                 return (False, False)
-            return (True, True)
+            return (False, False)
 
         return (False, False)
 
