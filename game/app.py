@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import argparse
 import sys
 from dataclasses import dataclass
+from typing import Any
 
 import pygame
 
 from game import settings
 from game.entities import Cloud, Coin, ObstaclePair, make_cloud, make_coin, make_obstacle, make_player
+from game.network import DEFAULT_PORT, NetworkSession, get_lan_ip
 from game.save_data import load_save, save_save
 
 
@@ -23,7 +26,9 @@ class Button:
 class Game:
     W_SCANCODE = 26
 
-    def __init__(self) -> None:
+    def __init__(self, network: NetworkSession | None = None) -> None:
+        self.network = network or NetworkSession()
+        self.local_player_index = 1 if self.network.is_client else 0
         pygame.init()
         pygame.display.set_caption(settings.TITLE)
         self.scale = 1.0
@@ -120,34 +125,176 @@ class Game:
         self.game_over_buttons = {}
 
     def run(self) -> None:
-        while True:
-            dt = self.clock.tick(settings.FPS) / 1000.0
-            flaps = [False, False]
-            self.mouse_pos = pygame.mouse.get_pos()
+        try:
+            while True:
+                dt = self.clock.tick(settings.FPS) / 1000.0
+                flaps = self.receive_network_messages()
+                self.mouse_pos = pygame.mouse.get_pos()
 
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    pygame.quit()
-                    sys.exit(0)
-                if event.type == pygame.KEYDOWN:
-                    key_flaps = self.handle_keydown(event)
-                    flaps[0] = flaps[0] or key_flaps[0]
-                    flaps[1] = flaps[1] or key_flaps[1]
-                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    click_flaps = self.handle_click(event.pos)
-                    flaps[0] = flaps[0] or click_flaps[0]
-                    flaps[1] = flaps[1] or click_flaps[1]
-                if event.type == self.obstacle_event and self.state == "playing" and not self.game_over and not self.paused:
-                    self.obstacles.append(make_obstacle())
-                if event.type == self.coin_event and self.state == "playing" and not self.game_over and not self.paused:
-                    self.coins.append(make_coin())
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        pygame.quit()
+                        sys.exit(0)
+                    if event.type == pygame.KEYDOWN:
+                        key_flaps = self.handle_keydown(event)
+                        flaps[0] = flaps[0] or key_flaps[0]
+                        flaps[1] = flaps[1] or key_flaps[1]
+                    if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                        click_flaps = self.handle_click(event.pos)
+                        flaps[0] = flaps[0] or click_flaps[0]
+                        flaps[1] = flaps[1] or click_flaps[1]
+                    if not self.network.is_client and event.type == self.obstacle_event and self.state == "playing" and not self.game_over and not self.paused:
+                        self.obstacles.append(make_obstacle())
+                    if not self.network.is_client and event.type == self.coin_event and self.state == "playing" and not self.game_over and not self.paused:
+                        self.coins.append(make_coin())
 
-            if self.state == "playing" and not self.game_over and not self.paused:
-                self.update(dt, tuple(flaps))
-            else:
-                self.update_menu_scene(dt)
+                if self.network.is_client:
+                    if self.state in {"menu", "shop"}:
+                        self.update_menu_scene(dt)
+                elif self.state == "playing" and not self.game_over and not self.paused:
+                    self.update(dt, tuple(flaps))
+                else:
+                    self.update_menu_scene(dt)
 
-            self.draw()
+                if self.network.is_host:
+                    self.network.send("snapshot", self.make_snapshot())
+                elif self.network.is_client:
+                    self.network.send("hello", {"version": 1})
+
+                self.draw()
+        finally:
+            self.network.close()
+
+    def receive_network_messages(self) -> list[bool]:
+        flaps = [False, False]
+        for message in self.network.receive():
+            if self.network.is_client and message.kind == "snapshot":
+                self.apply_snapshot(message.data)
+            elif self.network.is_host and message.kind == "input":
+                player_index = int(message.data.get("player", 1))
+                if player_index != 1:
+                    continue
+                command = str(message.data.get("command", ""))
+                if command == "flap":
+                    flaps[1] = True
+                elif command == "start":
+                    self.start_run(initial_flap=bool(message.data.get("initial_flap", False)))
+                elif command == "restart":
+                    self.start_run(initial_flap=True)
+                elif command == "menu":
+                    self.return_to_menu()
+                elif command == "pause" and self.state == "playing" and not self.game_over:
+                    self.paused = not self.paused
+        return flaps
+
+    def send_network_input(self, command: str, **data: object) -> None:
+        self.network.send("input", {"player": self.local_player_index, "command": command, **data})
+
+    def make_snapshot(self) -> dict[str, Any]:
+        return {
+            "state": self.state,
+            "paused": self.paused,
+            "game_over": self.game_over,
+            "score": self.score,
+            "best_score": self.best_score,
+            "run_coins": self.run_coins,
+            "total_coins": self.total_coins,
+            "player_scores": self.player_scores,
+            "player_alive": self.player_alive,
+            "selected_skin_ids": self.selected_skin_ids,
+            "players": [
+                {
+                    "x": player.rect.x / settings.SCREEN_WIDTH,
+                    "y": player.rect.y / settings.SCREEN_HEIGHT,
+                    "velocity_y": player.velocity_y,
+                }
+                for player in self.players
+            ],
+            "obstacles": [
+                {
+                    "x": obstacle.x / settings.SCREEN_WIDTH,
+                    "gap_y": obstacle.gap_y / settings.SCREEN_HEIGHT,
+                    "passed_players": sorted(obstacle.passed_players),
+                }
+                for obstacle in self.obstacles
+            ],
+            "coins": [{"x": coin.x / settings.SCREEN_WIDTH, "y": coin.y / settings.SCREEN_HEIGHT} for coin in self.coins],
+            "clouds": [{"x": cloud.x / settings.SCREEN_WIDTH, "y": cloud.y, "speed_scale": cloud.speed_scale} for cloud in self.clouds],
+            "city_offsets": [offset / int(layer["width"]) for offset, layer in zip(self.city_offsets, self.city_layers)],
+        }
+
+    def apply_snapshot(self, snapshot: dict[str, Any]) -> None:
+        self.state = str(snapshot.get("state", self.state))
+        self.paused = bool(snapshot.get("paused", self.paused))
+        self.game_over = bool(snapshot.get("game_over", self.game_over))
+        self.score = int(snapshot.get("score", self.score))
+        self.best_score = int(snapshot.get("best_score", self.best_score))
+        self.run_coins = int(snapshot.get("run_coins", self.run_coins))
+        self.total_coins = int(snapshot.get("total_coins", self.total_coins))
+        self.player_scores = self.int_pair(snapshot.get("player_scores"), self.player_scores)
+        self.player_alive = self.bool_pair(snapshot.get("player_alive"), self.player_alive)
+
+        selected_skin_ids = snapshot.get("selected_skin_ids")
+        if isinstance(selected_skin_ids, list) and len(selected_skin_ids) >= 2:
+            self.selected_skin_ids = [skin_id if skin_id in self.skin_by_id else "classic" for skin_id in selected_skin_ids[:2]]
+            for index, player in enumerate(self.players[:2]):
+                player.skin = self.skin_by_id[self.selected_skin_ids[index]]
+
+        players = snapshot.get("players")
+        if isinstance(players, list):
+            for index, player_state in enumerate(players[:2]):
+                if not isinstance(player_state, dict):
+                    continue
+                player = self.players[index]
+                player.rect.x = int(float(player_state.get("x", player.rect.x / settings.SCREEN_WIDTH)) * settings.SCREEN_WIDTH)
+                player.rect.y = int(float(player_state.get("y", player.rect.y / settings.SCREEN_HEIGHT)) * settings.SCREEN_HEIGHT)
+                player.velocity_y = float(player_state.get("velocity_y", player.velocity_y))
+
+        obstacles = snapshot.get("obstacles")
+        if isinstance(obstacles, list):
+            self.obstacles = []
+            for obstacle_state in obstacles:
+                if not isinstance(obstacle_state, dict):
+                    continue
+                obstacle = ObstaclePair(
+                    x=float(obstacle_state.get("x", 1.0)) * settings.SCREEN_WIDTH,
+                    gap_y=int(float(obstacle_state.get("gap_y", 0.35)) * settings.SCREEN_HEIGHT),
+                )
+                passed_players = obstacle_state.get("passed_players", [])
+                if isinstance(passed_players, list):
+                    obstacle.passed_players = {int(index) for index in passed_players}
+                self.obstacles.append(obstacle)
+
+        coins = snapshot.get("coins")
+        if isinstance(coins, list):
+            self.coins = [
+                Coin(float(coin.get("x", 1.0)) * settings.SCREEN_WIDTH, float(coin.get("y", 0.5)) * settings.SCREEN_HEIGHT)
+                for coin in coins
+                if isinstance(coin, dict)
+            ]
+
+        clouds = snapshot.get("clouds")
+        if isinstance(clouds, list):
+            self.clouds = [
+                Cloud(float(cloud.get("x", 0.0)) * settings.SCREEN_WIDTH, int(cloud.get("y", 90)), float(cloud.get("speed_scale", 1.0)))
+                for cloud in clouds
+                if isinstance(cloud, dict)
+            ]
+
+        city_offsets = snapshot.get("city_offsets")
+        if isinstance(city_offsets, list):
+            for index, offset in enumerate(city_offsets[: len(self.city_layers)]):
+                self.city_offsets[index] = float(offset) * int(self.city_layers[index]["width"])
+
+    def int_pair(self, value: object, fallback: list[int]) -> list[int]:
+        if not isinstance(value, list) or len(value) < 2:
+            return fallback
+        return [int(value[0]), int(value[1])]
+
+    def bool_pair(self, value: object, fallback: list[bool]) -> list[bool]:
+        if not isinstance(value, list) or len(value) < 2:
+            return fallback
+        return [bool(value[0]), bool(value[1])]
 
     def handle_keydown(self, event: pygame.event.Event) -> tuple[bool, bool]:
         key = event.key
@@ -155,11 +302,18 @@ class Game:
 
         if self.state == "menu":
             if key == pygame.K_RETURN:
+                if self.network.is_client:
+                    self.send_network_input("start")
+                    return (False, False)
                 self.start_run()
             elif key == pygame.K_SPACE:
+                if self.network.is_client:
+                    self.send_network_input("start", initial_flap=True)
+                    return (False, False)
                 self.start_run(initial_flap=True)
             elif key == pygame.K_s:
-                self.state = "shop"
+                if not self.network.is_client:
+                    self.state = "shop"
             return (False, False)
 
         if self.state == "shop":
@@ -172,21 +326,41 @@ class Game:
 
         if self.paused:
             if key == pygame.K_ESCAPE:
+                if self.network.is_client:
+                    self.send_network_input("pause")
+                    return (False, False)
                 self.paused = False
             return (False, False)
 
         if key == pygame.K_ESCAPE:
+            if self.network.is_client:
+                self.send_network_input("pause")
+                return (False, False)
             if self.game_over:
                 self.return_to_menu()
             else:
                 self.paused = True
             return (False, False)
         if key == pygame.K_m and self.game_over:
+            if self.network.is_client:
+                self.send_network_input("menu")
+                return (False, False)
             self.return_to_menu()
             return (False, False)
         if key == pygame.K_r and self.game_over:
+            if self.network.is_client:
+                self.send_network_input("restart")
+                return (False, False)
             self.start_run()
             return (False, False)
+        if self.network.is_networked and (scancode == self.W_SCANCODE or key in (pygame.K_w, pygame.K_SPACE, pygame.K_UP)):
+            if self.network.is_client:
+                self.send_network_input("flap")
+                return (False, False)
+            if self.game_over:
+                self.start_run(initial_flap=True)
+                return (False, False)
+            return (True, False)
         if scancode == self.W_SCANCODE or key == pygame.K_w:
             if self.game_over:
                 self.start_run(initial_flap=True)
@@ -204,9 +378,13 @@ class Game:
             for action, button in self.menu_buttons.items():
                 if button.contains(position):
                     if action == "play":
+                        if self.network.is_client:
+                            self.send_network_input("start")
+                            return (False, False)
                         self.start_run()
                     elif action == "shop":
-                        self.state = "shop"
+                        if not self.network.is_client:
+                            self.state = "shop"
                     elif action == "quit":
                         pygame.quit()
                         sys.exit(0)
@@ -232,12 +410,21 @@ class Game:
                 for action, button in self.pause_buttons.items():
                     if button.contains(position):
                         if action == "resume":
+                            if self.network.is_client:
+                                self.send_network_input("pause")
+                                return (False, False)
                             self.paused = False
                         elif action == "menu":
+                            if self.network.is_client:
+                                self.send_network_input("menu")
+                                return (False, False)
                             self.return_to_menu()
                         return (False, False)
                 return (False, False)
             if self.play_button.contains(position):
+                if self.network.is_client:
+                    self.send_network_input("pause")
+                    return (False, False)
                 self.paused = True
                 return (False, False)
             if self.game_over:
@@ -246,12 +433,26 @@ class Game:
                 for action, button in self.game_over_buttons.items():
                     if button.contains(position):
                         if action == "restart":
+                            if self.network.is_client:
+                                self.send_network_input("restart")
+                                return (False, False)
                             self.start_run(initial_flap=True)
                         elif action == "menu":
+                            if self.network.is_client:
+                                self.send_network_input("menu")
+                                return (False, False)
                             self.return_to_menu()
                         return (False, False)
-                self.start_run(initial_flap=True)
+                if self.network.is_client:
+                    self.send_network_input("restart")
+                else:
+                    self.start_run(initial_flap=True)
                 return (False, False)
+            if self.network.is_client:
+                self.send_network_input("flap")
+                return (False, False)
+            if self.network.is_host:
+                return (True, False)
             return (False, False)
 
         return (False, False)
@@ -505,7 +706,13 @@ class Game:
         self.screen.blit(p2_state, (score_panel.x + self.sc(224), score_panel.y + self.sc(48)))
         self.screen.blit(coins_text, (score_panel.x + self.sc(118), score_panel.y + self.sc(68)))
 
-        hint = self.font_small.render("P1: W   P2: Arrow Up", True, settings.WHITE)
+        if self.network.is_host:
+            hint_text = "Online host: you are P1   P2 uses the client"
+        elif self.network.is_client:
+            hint_text = "Online client: you are P2"
+        else:
+            hint_text = "P1: W   P2: Arrow Up"
+        hint = self.font_small.render(hint_text, True, settings.WHITE)
         self.screen.blit(hint, (self.sc(24), settings.SCREEN_HEIGHT - settings.GROUND_HEIGHT + self.sc(28)))
 
         self.play_button = Button(self.top_right_button_rect(), "Pause", "hud")
@@ -610,6 +817,12 @@ class Game:
             f"P2 skin: {self.skin_by_id[self.selected_skin_ids[1]]['name']}",
             "Enter to start, S to open shop",
         ]
+        if self.network.is_host:
+            stats[-1] = f"Host: {get_lan_ip()}:{self.network.port}"
+            stats.append("Waiting for P2" if not self.network.has_peer else "P2 connected")
+        elif self.network.is_client:
+            stats[-1] = f"Client: {self.network.host}:{self.network.port}"
+            stats.append("Connected" if self.network.has_peer else "Connecting...")
         for index, line in enumerate(stats):
             text = self.font_small.render(line, True, settings.TEXT)
             self.screen.blit(text, (stats_panel.x + self.sc(22), stats_panel.y + self.sc(24 + index * 32)))
@@ -862,5 +1075,23 @@ class Game:
         return current_y
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run Sky Courier.")
+    network_group = parser.add_mutually_exclusive_group()
+    network_group.add_argument("--host", action="store_true", help="host a two-player game on the local network")
+    network_group.add_argument("--join", metavar="IP", help="join a host on the local network")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"UDP port for local online play (default: {DEFAULT_PORT})")
+    return parser.parse_args()
+
+
 def main() -> None:
-    Game().run()
+    args = parse_args()
+    if args.host:
+        print(f"Hosting local online game at {get_lan_ip()}:{args.port}")
+        network = NetworkSession(mode="host", port=args.port)
+    elif args.join:
+        print(f"Joining local online game at {args.join}:{args.port}")
+        network = NetworkSession(mode="client", host=args.join, port=args.port)
+    else:
+        network = NetworkSession()
+    Game(network).run()
